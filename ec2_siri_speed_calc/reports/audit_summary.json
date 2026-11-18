@@ -1,0 +1,97 @@
+{
+  "timestamp": "2026-08-11T15:13:43",
+  "week_a": "T:\\GIS\\gtfs\\2026\\28-04-2026",
+  "week_b": "T:\\GIS\\gtfs\\2026\\21-04-2026",
+  "step_m": 50.0,
+  "n_routes_a": 6785,
+  "n_routes_b": 6797,
+  "shape_id_jaccard": 0.9847619047619047,
+  "route_desc_jaccard": 0.9947128800117492,
+  "alt_num_jaccard": 0.9947128800117492,
+  "n_matched_routes_geometry": 6773,
+  "geometry_median_hausdorff_m": 0.0,
+  "geometry_median_length_rel_diff": 0.0,
+  "edge_stats": {
+    "n_shared_alts": 6773,
+    "n_from_to_a": 4141888,
+    "n_from_to_b": 4142587,
+    "from_to_jaccard": 0.9933976698988946,
+    "seq_identity_jaccard": 0.9938271873095363,
+    "matched_edge_median_hausdorff_m": 0.0,
+    "n_hausdorff_sample": 5000
+  },
+  "altnum_mapping": {
+    "n_gtfs_routes": 6785,
+    "n_rts_alt_num": 6406,
+    "gtfs_alt_in_rts_pct": 93.88356669123066,
+    "rts_alt_in_gtfs_pct": 99.43802684982829,
+    "n_shared_alt_num": 6370,
+    "gtfs_makat_in_rts_pct": 97.27843684577809,
+    "makat_agree_given_shared_alt_pct": 100.0,
+    "mapping_rule": "ALT_NUM = str(GTFS route_id); MAKAT = route_desc split[0]",
+    "sample_shared_alt": [
+      "1",
+      "10",
+      "10007",
+      "10014",
+      "10020",
+      "10021",
+      "10022",
+      "10023",
+      "1003",
+      "1005"
+    ],
+    "sample_gtfs_only_alt": [
+      "10000",
+      "10001",
+      "10002",
+      "10003",
+      "10004",
+      "10126",
+      "10127",
+      "10243",
+      "10246",
+      "10379"
+    ],
+    "sample_rts_only_alt": [
+      "10632",
+      "10633",
+      "10746",
+      "10747",
+      "18129",
+      "18367",
+      "18422",
+      "18459",
+      "18658",
+      "18707"
+    ]
+  },
+  "rts_offset_informational": {
+    "skipped": true,
+    "reason": "informational; enable with AUDIT_RTS_GEOM=1"
+  },
+  "checks": {
+    "matched_route_median_hausdorff_m": {
+      "value": 0.0,
+      "threshold": 5.0,
+      "pass": true
+    },
+    "matched_route_median_length_rel_diff": {
+      "value": 0.0,
+      "threshold": 0.01,
+      "pass": true
+    },
+    "from_to_retention_jaccard": {
+      "value": 0.9933976698988946,
+      "threshold": 0.95,
+      "pass": true
+    },
+    "seq_identity_jaccard": {
+      "value": 0.9938271873095363,
+      "threshold": 0.9,
+      "pass": true
+    }
+  },
+  "overall_pass": true,
+  "verdict": "PASS \u2014 proceed to Phase 1\u20132"
+}

@@ -1,0 +1,12 @@
+*.geojson
+*.parquet
+*.cpg
+*.dbf
+*.prj
+*.shp
+*.shx
+*.qix
+/.venv
+/cache
+/__pycache__
+*.env

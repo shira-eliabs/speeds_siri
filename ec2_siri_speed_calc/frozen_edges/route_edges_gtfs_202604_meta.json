@@ -1,0 +1,11 @@
+{
+  "gtfs_zip": "T:\\GIS\\gtfs\\2026\\28-04-2026\\GTFS_israel-public-transportation_28042026.zip",
+  "gtfs_sha256": "16158139347ce8f3c73a4856429a595d7cd2bcf5eef1b311df68bb0e6fa4def1",
+  "cluster_to_line": "T:\\GIS\\gtfs\\2026\\28-04-2026\\ClusterToLine_28042026.zip",
+  "step_m": 50.0,
+  "crs": 2039,
+  "node_round_decimals": 3,
+  "n_edges": 4602812,
+  "n_routes": 6785,
+  "out_parquet": "\\\\FS2.eliabens.local\\Public-Transport\\GIS\\Speeds\\siri-realtime\\python\\ec2_siri_speed_calc\\frozen_edges\\route_edges_gtfs_202604.parquet"
+}

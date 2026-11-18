@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-08-13T16:13:33",
+  "year": 2026,
+  "month": 4,
+  "gtfs_zip": "T:\\GIS\\gtfs\\2026\\28-04-2026\\GTFS_israel-public-transportation_28042026.zip",
+  "rts_route_edges": "T:\\RTS\\Israel\\Israel_April_2026\\shape_files\\outputs\\route_edges\\route_edges_2026.parquet",
+  "street_net": "T:\\RTS\\Israel\\Israel_April_2026\\shape_files\\outputs\\output_street_nets_coords\\street_net_2026.parquet",
+  "hausdorff_max_m": 200.0,
+  "length_rel_diff_max": 0.03,
+  "n_edges": 1926846,
+  "n_alts": 6785,
+  "n_use_rts_alts": 5544,
+  "n_mapmatch_requested": 1241,
+  "n_mapmatch_ok": 1241,
+  "n_mapmatch_failed": 0,
+  "mapmatch_failed_alts_sample": [],
+  "out_parquet": "\\\\FS2.eliabens.local\\Public-Transport\\GIS\\Speeds\\siri-realtime\\python\\ec2_siri_speed_calc\\frozen_edges\\route_edges_hybrid_202604.parquet"
+}

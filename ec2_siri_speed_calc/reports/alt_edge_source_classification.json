@@ -1,0 +1,8 @@
+{
+  "n_alts": 6785,
+  "n_use_rts": 5544,
+  "n_mapmatch_gtfs": 1241,
+  "pct_use_rts": 81.71,
+  "hausdorff_max_m": 200.0,
+  "length_rel_diff_max": 0.03
+}
