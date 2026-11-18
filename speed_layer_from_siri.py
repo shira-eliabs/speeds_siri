@@ -35,128 +35,187 @@ from pyarrow.lib import ArrowInvalid
 import polars as pl
 import shapely  # requires shapely >= 2.0
 
-
 warnings.filterwarnings("ignore")
 pd.set_option("display.max_columns", 500)
 _SIRI_TYPES = Literal["hasadna", "realtime"]
 _TIME_TYPES = Literal["weekend", "weekdays", "friday"]
 
 
-def find_relevant_edge_seq(trip_df: gpd.GeoDataFrame, edges_files_gdf: gpd.GeoDataFrame) -> dict:
+def find_relevant_edge_seq(
+    trip_df: gpd.GeoDataFrame,
+    edges_files_gdf: gpd.GeoDataFrame,
+    max_distance: float = 200.0,
+    k_candidates: int = 6,
+    odometer_col: str | None = "MonitoredCall_DistanceFromStop",
+    odometer_weight: float = 0.1,
+    transition_weight: float = 0.2,
+    backward_tolerance: float = 30.0,
+    skip_penalty: float = 300.0,
+    max_skip: int = 5,
+) -> gpd.GeoDataFrame:
     """
-    Find relevant edge sequences for a given trip based on their spatial proximity.
+    Match SIRI GPS points to the ordered edges of a bus route.
+
+    Works on circular routes and routes whose links overlap (same street driven
+    in both directions), because every point keeps several candidate edges and
+    the edge sequence is chosen jointly for the whole trip (Viterbi-style DP)
+    instead of one point at a time.
 
     Parameters
     ----------
-    trip_df : gpd.GeoDataFrame
-        DataFrame containing information about the trip.
-    edges_files_gdf : gpd.GeoDataFrame
-        GeoDataFrame containing information about edges.
+    trip_df : GeoDataFrame
+        GPS points of ONE vehicle journey, ordered by time.
+    edges_files_gdf : GeoDataFrame
+        Route edges in driving order (positional order = route order), same CRS.
+    max_distance : float
+        Search radius (CRS units, metres for EPSG:2039) for candidate edges.
+    k_candidates : int
+        Number of best candidate edges kept per GPS point.
+    odometer_col : str or None
+        Column holding the distance travelled along the route. Set to None
+        (or odometer_weight=0) if the feed does not provide it.
+    odometer_weight : float
+        Cost per metre of disagreement between the odometer and the position
+        of the candidate along the route.
+    transition_weight : float
+        Cost per metre of disagreement between the distance advanced along
+        the route and the straight-line distance between consecutive points.
+    backward_tolerance : float
+        How far (metres) the matched position may move backwards between
+        points (GPS jitter at stops). Larger moves backwards are forbidden.
+    skip_penalty : float
+        Cost of leaving a point unmatched (outliers, points of another trip).
+    max_skip : int
+        Maximum number of consecutive points that can be skipped in one jump.
 
     Returns
     -------
-    dict
-        Dictionary with relevant edge sequences for the given trip.
+    GeoDataFrame
+        Copy of trip_df with edge_seq, closest_edge_seq, closest_edge_geom,
+        dist_to_edge and route_pos (distance along the route of the match).
     """
+    if trip_df.crs is not None and edges_files_gdf.crs is not None and trip_df.crs != edges_files_gdf.crs:
+        raise ValueError("trip_df and edges_files_gdf must share the same CRS")
 
-    def _find_relevant_edge_seq(edges_files_gdf, trip_df):
-        trip_indx, edge_indx = edges_files_gdf.sindex.nearest(trip_df.geometry, return_all=True, max_distance=200)
+    n = len(trip_df)
+    out = trip_df.copy()
+    edges = edges_files_gdf
 
-        if "cumulative_dist" not in edges_files_gdf.columns:
-            edges_files_gdf["cumulative_dist"] = edges_files_gdf.length.cumsum()
-        gps_to_edge_dict = defaultdict(list)
-        for x, y in zip(trip_indx, edge_indx):
-            gps_to_edge_dict[x].append(y)
+    # ---- route measures of every edge -------------------------------------
+    edge_geoms = edges.geometry.to_numpy()
+    edge_len = shapely.length(edge_geoms)
+    if "cumulative_dist" in edges.columns:
+        edge_end = edges["cumulative_dist"].to_numpy(dtype=float)
+    else:
+        edge_end = np.cumsum(edge_len)
+    edge_start = edge_end - edge_len
 
-        for x, y in gps_to_edge_dict.items():
-            if len(y) > 1:
-                dist_gps = int(trip_df.iloc[x]["MonitoredCall_DistanceFromStop"])
-                dists_dict = {edges_files_gdf.iloc[indx]["cumulative_dist"]: indx for indx in y}
-                nearest_dist = utils.find_nearest(list(dists_dict.keys()), int(dist_gps))
-                indx_correct_order = dists_dict.get(nearest_dist)
-                gps_to_edge_dict[x] = indx_correct_order
-            else:
-                gps_to_edge_dict[x] = y[0]
+    if "seq" in edges.columns:
+        seq_col = edges.loc[:, "seq"]
+        if isinstance(seq_col, pd.DataFrame):  # duplicated "seq" column
+            seq_col = seq_col.iloc[:, 0]
+        seq_values = seq_col.to_numpy()
+    else:
+        seq_values = edges.index.to_numpy()
 
-        missing_keys = set(trip_df.index) - set(gps_to_edge_dict.keys())
-        for k in missing_keys:
-            gps_to_edge_dict[k] = None
-        return gps_to_edge_dict, edge_indx
+    pts = trip_df.geometry.to_numpy()
+    if odometer_col and odometer_col in trip_df.columns and odometer_weight > 0:
+        odo = pd.to_numeric(trip_df[odometer_col], errors="coerce").to_numpy(dtype=float)
+    else:
+        odo = np.full(n, np.nan)
 
-    gps_to_edge_dict, edge_indx = _find_relevant_edge_seq(edges_files_gdf, trip_df)
-    trip_df["edge_seq"] = gps_to_edge_dict.values()
+    # ---- 1. candidate edges for every point --------------------------------
+    pt_idx, e_idx = edges.sindex.query(gpd.GeoSeries(shapely.buffer(pts, max_distance)), predicate="intersects")
+    d = shapely.distance(pts[pt_idx], edge_geoms[e_idx])
+    keep = d <= max_distance
+    pt_idx, e_idx, d = pt_idx[keep], e_idx[keep], d[keep]
+    pos = edge_start[e_idx] + shapely.line_locate_point(edge_geoms[e_idx], pts[pt_idx])
 
-    index_to_seq = dict(zip(range(0, len(edges_files_gdf.index)), edges_files_gdf.index))
-    edges_files_gdf["seq_1"] = edges_files_gdf.index
+    order = np.argsort(pt_idx, kind="stable")
+    pt_idx, e_idx, d, pos = pt_idx[order], e_idx[order], d[order], pos[order]
+    bounds = np.searchsorted(pt_idx, np.arange(n + 1))
 
-    edges_values1 = edges_files_gdf.loc[filter(None, gps_to_edge_dict.values())]
-    edges_values1 = edges_values1.filter(["seq", "cumulative_dist", "geometry"]).rename(
-        columns={"seq": "closest_edge_seq1", "cumulative_dist": "cumulative_dist1", "geometry": "closest_edge_geom1"}
-    )
-    edges_values1 = edges_values1.reset_index(drop=True)
-    trip_df = trip_df.merge(edges_values1, left_on="edge_seq", right_on="closest_edge_seq1", how="left")
-
-    mask = (trip_df["cumulative_dist1"] - trip_df["MonitoredCall_DistanceFromStop"]) <= 2000
-    trip_df.loc[mask, ["closest_edge_geom", "closest_edge_seq"]] = trip_df.loc[
-        mask, ["closest_edge_geom1", "closest_edge_seq1"]
-    ].values
-
-    if len(trip_df.loc[trip_df["closest_edge_seq"].isnull()]) > 0:
-        not_missing_trip_df = trip_df.loc[trip_df["closest_edge_seq"].notnull()]
-        missing_trip_df = trip_df.loc[trip_df["closest_edge_seq"].isnull()]
-        missing_trip_df = missing_trip_df.reset_index()
-        edge_indx = [index_to_seq[x] for x in edge_indx]
-        edges_files_gdf_part = edges_files_gdf.loc[
-            list(set(edges_files_gdf.index) - set(missing_trip_df["closest_edge_seq1"]))
-        ]
-        index_to_seq = dict(zip(range(0, len(edges_files_gdf_part.index)), edges_files_gdf_part.index))
-
-        gps_to_edge_dict2, _ = _find_relevant_edge_seq(edges_files_gdf_part, missing_trip_df.reset_index())
-        gps_to_edge_dict2 = {k: index_to_seq[y] if y else None for k, y in gps_to_edge_dict2.items()}
-        gps_to_edge_dict2 = dict(sorted(gps_to_edge_dict2.items()))
-        # edges_files_gdf.loc[gps_to_edge_dict2.values()]
-        gps_to_edge_dict2 = [
-            (
-                edges_files_gdf_part.loc[[y]][["seq_1", "cumulative_dist", "geometry"]].values.flatten().tolist()
-                if y
-                else [None, None, None]
-            )
-            for k, y in gps_to_edge_dict2.items()
-        ]
-        edges_values2 = pd.DataFrame(
-            gps_to_edge_dict2, columns=["closest_edge_seq2", "cumulative_dist2", "closest_edge_geom2"]
+    cands = []
+    for i in range(n):
+        s, t = bounds[i], bounds[i + 1]
+        cost = d[s:t].copy()
+        if not np.isnan(odo[i]):
+            cost += odometer_weight * np.abs(pos[s:t] - odo[i])
+        best_k = np.argsort(cost)[:k_candidates]
+        cands.append(
+            {
+                "edge": e_idx[s:t][best_k],
+                "dist": d[s:t][best_k],
+                "pos": pos[s:t][best_k],
+                "cost": cost[best_k],
+            }
         )
 
-        # missing_trip_df = pd.concat([missing_trip_df, edges_values2], axis=1)
-        missing_trip_df = missing_trip_df.merge(edges_values2, left_index=True, right_index=True)
-        missing_trip_df.loc[
-            (missing_trip_df["cumulative_dist2"] - missing_trip_df["MonitoredCall_DistanceFromStop"]) <= 2000,
-            "closest_edge_geom",
-        ] = missing_trip_df["closest_edge_geom2"]
-        missing_trip_df.loc[
-            (missing_trip_df["cumulative_dist2"] - missing_trip_df["MonitoredCall_DistanceFromStop"]) <= 2000,
-            "closest_edge_seq",
-        ] = missing_trip_df["closest_edge_seq2"]
-        missing_trip_df.index = missing_trip_df["index"]
-        trip_df = gpd.GeoDataFrame(pd.concat([not_missing_trip_df, missing_trip_df]), crs=2039)
-        trip_df = trip_df.sort_index()
+    # ---- 2. dynamic programming over the whole trip ------------------------
+    best = [np.full(len(c["edge"]), np.inf) for c in cands]
+    back = [np.full((len(c["edge"]), 2), -1, dtype=int) for c in cands]
 
-    # def dist_np(geom1, geom2):
-    #     return np.linalg.norm(np.array((geom1.x, geom1.y)) - np.array((geom2.x, geom2.y)))
+    for i in range(n):
+        ci = cands[i]
+        if len(ci["edge"]) == 0:
+            continue
+        # Option A: the matched path starts here (all earlier points skipped)
+        best[i][:] = ci["cost"] + skip_penalty * i
+        # Option B: continue from a previous point j (skipping i-j-1 points)
+        for j in range(max(0, i - 1 - max_skip), i):
+            cj = cands[j]
+            if len(cj["edge"]) == 0 or not np.isfinite(best[j]).any():
+                continue
+            straight = shapely.distance(pts[i], pts[j])
+            adv = ci["pos"][None, :] - cj["pos"][:, None]  # shape (kj, ki)
+            trans = transition_weight * np.abs(adv - straight)
+            trans[adv < -backward_tolerance] = np.inf  # no going back on the route
+            total = best[j][:, None] + trans + skip_penalty * (i - j - 1)
+            arg = np.argmin(total, axis=0)
+            val = total[arg, np.arange(len(arg))] + ci["cost"]
+            better = val < best[i]
+            if better.any():
+                best[i][better] = val[better]
+                back[i][better, 0] = j
+                back[i][better, 1] = arg[better]
 
-    trip_df = trip_df.drop(
-        columns=[
-            "closest_edge_seq1",
-            "cumulative_dist1",
-            "closest_edge_geom1",
-            "closest_edge_seq2",
-            "cumulative_dist2",
-            "closest_edge_geom2",
-            "index",
-        ],
-        errors="ignore",
+    # best end point (trailing points may be skipped)
+    end_i, end_c, end_val = -1, -1, np.inf
+    for i in range(n):
+        if len(best[i]) == 0:
+            continue
+        c = int(np.argmin(best[i]))
+        v = best[i][c] + skip_penalty * (n - 1 - i)
+        if v < end_val:
+            end_i, end_c, end_val = i, c, v
+
+    match_c = np.full(n, -1)
+    i, c = end_i, end_c
+    while i >= 0:
+        match_c[i] = c
+        i, c = back[i][c]
+
+    # ---- 3. write results ---------------------------------------------------
+    edge_pos = np.full(n, -1)
+    dist_to_edge = np.full(n, np.nan)
+    route_pos = np.full(n, np.nan)
+    for i, c in enumerate(match_c):
+        if c >= 0:
+            edge_pos[i] = cands[i]["edge"][c]
+            dist_to_edge[i] = cands[i]["dist"][c]
+            route_pos[i] = cands[i]["pos"][c]
+    has = edge_pos >= 0
+
+    out["edge_seq"] = pd.Series(np.where(has, edge_pos, np.nan), index=out.index).astype("Int64")
+    out["closest_edge_seq"] = pd.Series(
+        [seq_values[e] if e >= 0 else None for e in edge_pos], index=out.index, dtype=object
     )
-    return trip_df
+    out["closest_edge_geom"] = pd.Series(
+        [edge_geoms[e] if e >= 0 else None for e in edge_pos], index=out.index, dtype=object
+    )
+    out["dist_to_edge"] = dist_to_edge
+    out["route_pos"] = route_pos
+    return out
 
 
 def filter_too_far_gps(route_geom: LineString, trip_df: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -1083,16 +1142,7 @@ if __name__ == "__main__":
 
     for day in range(1, 31):
 
-        main(
-            output_dir,
-            siri_type,
-            day,
-            month,
-            year,
-            edges_files_gdf,
-            filter_name,
-            calc_avg_monthly=True
-        )
+        main(output_dir, siri_type, day, month, year, edges_files_gdf, filter_name, calc_avg_monthly=True)
         gc.collect()
     # edges_files_gdf = read_RTS(year, month)
     # month_path = rf"{output_dir}\{year}\{str(month).zfill(2)}"
