@@ -38,19 +38,73 @@ def lon_lat_to_geom(
     return df
 
 
-def remove_too_close_points(trip_df):
-    points = np.array(list(zip(trip_df.geometry.x, trip_df.geometry.y)))
-    tree = KDTree(points)
+# def remove_too_close_points(trip_df):
+#     points = np.array(list(zip(trip_df.geometry.x, trip_df.geometry.y)))
+#     tree = KDTree(points)
 
-    result = list(tree.query_ball_point(points, 50))
+#     result = list(tree.query_ball_point(points, 50))
 
-    dict_neighbors = dict()
-    visited = list(range(len(points)))
-    while len(visited) > 0:
-        dict_neighbors[visited[0]] = result[visited[0]]
-        visited = list(set(visited) - set(result[visited[0]]))
+#     dict_neighbors = dict()
+#     visited = list(range(len(points)))
+#     while len(visited) > 0:
+#         dict_neighbors[visited[0]] = result[visited[0]]
+#         visited = list(set(visited) - set(result[visited[0]]))
 
-    return trip_df.iloc[list(dict_neighbors.keys())]
+
+#     return trip_df.iloc[list(dict_neighbors.keys())]
+def remove_too_close_points(
+    trip_df: gpd.GeoDataFrame,
+    min_distance: float = 50.0,
+    time_col: str | None = "RecordedAtTime",
+    route_pos_col: str | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Thin a trip so consecutive kept points are at least `min_distance` apart.
+
+    Points are compared only with the last *kept* point in time order, never
+    with points from another part of the trip. On circular routes or streets
+    driven in both directions, the outbound and return passes stay intact even
+    when they are within `min_distance` of each other.
+
+    Parameters
+    ----------
+    trip_df : GeoDataFrame
+        GPS points of ONE vehicle journey.
+    min_distance : float
+        Minimum spacing (CRS units, metres for EPSG:2039).
+    time_col : str or None
+        Column used to order the points. None keeps the current order.
+    route_pos_col : str or None
+        If given (e.g. "route_pos" from find_relevant_edge_seq), spacing is
+        measured along the route instead of as a straight line. Points without
+        a value in that column are kept and do not reset the spacing.
+    """
+    df = trip_df.sort_values(time_col, kind="stable") if time_col else trip_df
+    n = len(df)
+    if n == 0:
+        return df
+
+    if route_pos_col:
+        pos = df[route_pos_col].to_numpy(dtype=float)
+        keep = np.zeros(n, dtype=bool)
+        last = None
+        for i in range(n):
+            if np.isnan(pos[i]):
+                keep[i] = True
+            elif last is None or abs(pos[i] - last) >= min_distance:
+                keep[i] = True
+                last = pos[i]
+    else:
+        xy = np.column_stack([df.geometry.x.to_numpy(), df.geometry.y.to_numpy()])
+        keep = np.zeros(n, dtype=bool)
+        keep[0] = True
+        last = xy[0]
+        for i in range(1, n):
+            if np.hypot(*(xy[i] - last)) >= min_distance:
+                keep[i] = True
+                last = xy[i]
+
+    return df.iloc[np.flatnonzero(keep)]
 
 
 def cut_line_at_points(line: LineString, pdists: List[float]) -> MultiLineString:
